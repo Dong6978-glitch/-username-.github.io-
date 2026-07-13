@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>聚餐 - 現代化投票系統</title>
+    <title>聚餐 - 現代化投票系統 (超級雲端版)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
@@ -43,6 +43,9 @@
                 </h1>
             </div>
             <div class="flex items-center space-x-3">
+                <span id="syncStatus" class="text-[10px] bg-amber-100 text-amber-700 px-2 py-1 rounded-md font-medium flex items-center gap-1">
+                    <i class="fa-solid fa-arrows-rotate fa-spin"></i> 雲端連線中...
+                </span>
                 <button id="loginBtn" onclick="toggleModal('loginModal', true)" class="text-xs font-semibold text-slate-600 hover:text-brand-600 border border-slate-200 hover:border-brand-200 rounded-xl px-4 py-2 transition bg-white shadow-sm flex items-center gap-1.5">
                     <i class="fa-solid fa-shield-halved text-slate-400"></i> 管理員登入
                 </button>
@@ -94,7 +97,7 @@
             <div id="dateTimePage" class="space-y-6 text-center py-8">
                 <h2 class="text-xl font-bold text-slate-900">歡迎使用聚餐高效投票系統！</h2>
                 <p class="text-sm text-slate-500 max-w-md mx-auto">所有關於「日期、無法到場時間、自訂時段、餐廳投票以及人數統計」的功能，皆已整合移至第二頁。</p>
-                <button onclick="switchTab('stats')" class="bg-orangeBtn hover:bg-amber-500 text-slate-950 font-bold text-xs px-6 py-3 rounded-xl border-2 border-tabBorder shadow-md transition inline-flex items-center gap-2">
+                <button onclick="switchTab('stats')" class="bg-orangeBtn hover:bg-amber-500 text-slate-950 font-bold text-xs px-6 py-3 rounded-xl border-2 border-tabBorder shadow-md inline-flex items-center gap-2">
                     前往第二頁開始投票 🍽️
                 </button>
             </div>
@@ -315,15 +318,19 @@
     </div>
 
     <script>
-        // 全域變數初始化（優先由 localStorage 載入歷史資料，避免重整遺失）
-        let participants = JSON.parse(localStorage.getItem('app_participants')) || ["王小明", "陳大華", "張美麗"]; 
-        let timeSlots = JSON.parse(localStorage.getItem('app_timeSlots')) || ["18:00", "18:30", "19:00", "19:30"]; 
-        let hasVotedUsers = JSON.parse(localStorage.getItem('app_hasVotedUsers')) || []; 
-        let unavailableDates = JSON.parse(localStorage.getItem('app_unavailableDates')) || {};
-        let userAvailableTimeSlots = JSON.parse(localStorage.getItem('app_userAvailableTimeSlots')) || {}; 
-        let selectedMatrixUsers = JSON.parse(localStorage.getItem('app_selectedMatrixUsers')) || [...participants]; 
-        
-        let restaurants = JSON.parse(localStorage.getItem('app_restaurants')) || [
+        // 使用極其穩定的公共儲存庫，採用 URL Hash 當作獨立群組密鑰
+        const GROUP_ID = window.location.hash ? window.location.hash.substring(1) : "party_group_default";
+        const API_URL = `https://api.jsonbin.io/v3/b/6692bbdaad19ca34f8876c24`; 
+        const MASTER_KEY = "$2a$10$9XwF7gqA/jC.l3pP3nZpXunFvRjF6tDsh8v.FpxZf7rL1/XnI/N2.";
+
+        // 初始化全域變數
+        let participants = ["王小明", "陳大華", "張美麗"]; 
+        let timeSlots = ["18:00", "18:30", "19:00", "19:30"]; 
+        let hasVotedUsers = []; 
+        let unavailableDates = {};
+        let userAvailableTimeSlots = {}; 
+        let selectedMatrixUsers = [...participants]; 
+        let restaurants = [
             { name: "鼎泰豐小籠包", voters: { "王小明": { status: "參加", adult: 2, child: 1 }, "張美麗": { status: "參加", adult: 1, child: 0 } } },
             { name: "馬辣頂級麻辣鴛鴦火鍋", voters: {} }
         ];
@@ -333,26 +340,96 @@
         const weekDaysArr = ["日", "一", "二", "三", "四", "五", "六"];
 
         window.onload = function() {
-            initUserDataStructures();
-            renderNameComponents();
-            renderMatrixUserCheckboxes(); 
-            renderCalendar(currentYear, currentMonth);
-            renderTimeSlots(); 
-            updateVoteStatusDashboard();
-            renderRestaurantTable();
+            loadLocalCache();
+            refreshAllComponents();
+            loadDataFromCloud();
             startCountdownTimer();
             switchTab('datetime'); 
+            
+            // 每 6 秒自動抓取雲端，實時同步所有人裝置
+            setInterval(loadDataFromCloud, 6000);
         };
 
-        // 資料持久化存入 localStorage 的輔助函式
-        function saveData() {
-            localStorage.setItem('app_participants', JSON.stringify(participants));
-            localStorage.setItem('app_timeSlots', JSON.stringify(timeSlots));
-            localStorage.setItem('app_hasVotedUsers', JSON.stringify(hasVotedUsers));
-            localStorage.setItem('app_unavailableDates', JSON.stringify(unavailableDates));
-            localStorage.setItem('app_userAvailableTimeSlots', JSON.stringify(userAvailableTimeSlots));
-            localStorage.setItem('app_selectedMatrixUsers', JSON.stringify(selectedMatrixUsers));
-            localStorage.setItem('app_restaurants', JSON.stringify(restaurants));
+        function showSyncStatus(text, type='sync') {
+            const el = document.getElementById('syncStatus');
+            if(!el) return;
+            if (type === 'sync') {
+                el.className = "text-[10px] bg-indigo-50 text-indigo-700 px-2 py-1 rounded-md font-medium flex items-center gap-1";
+                el.innerHTML = `<i class="fa-solid fa-arrows-rotate fa-spin"></i> ${text}`;
+            } else if (type === 'success') {
+                el.className = "text-[10px] bg-emerald-50 text-emerald-700 px-2 py-1 rounded-md font-medium flex items-center gap-1";
+                el.innerHTML = `<i class="fa-solid fa-cloud"></i> ${text}`;
+            } else {
+                el.className = "text-[10px] bg-rose-50 text-rose-700 px-2 py-1 rounded-md font-medium flex items-center gap-1";
+                el.innerHTML = `<i class="fa-solid fa-circle-exclamation"></i> ${text}`;
+            }
+        }
+
+        function loadLocalCache() {
+            const cache = localStorage.getItem(`backup_${GROUP_ID}`);
+            if(cache) {
+                applyDataPackage(JSON.parse(cache));
+            }
+        }
+
+        async function loadDataFromCloud() {
+            try {
+                const res = await fetch(API_URL, {
+                    headers: { "X-Master-Key": MASTER_KEY, "X-Bin-Meta": "false" }
+                });
+                if (res.ok) {
+                    const cloudData = await res.json();
+                    if (cloudData && cloudData[GROUP_ID]) {
+                        applyDataPackage(cloudData[GROUP_ID]);
+                        localStorage.setItem(`backup_${GROUP_ID}`, JSON.stringify(cloudData[GROUP_ID]));
+                        refreshAllComponents();
+                        updateVoteStatusDashboard();
+                        showSyncStatus('雲端已同步', 'success');
+                    } else {
+                        // 該群組還沒有資料，直接上傳一筆
+                        saveData();
+                    }
+                }
+            } catch (e) {
+                showSyncStatus('本地模式運作中', 'error');
+            }
+        }
+
+        async function saveData() {
+            showSyncStatus('正在寫入雲端...');
+            const currentGroupData = {
+                participants, timeSlots, hasVotedUsers, unavailableDates, userAvailableTimeSlots, selectedMatrixUsers, restaurants
+            };
+            
+            localStorage.setItem(`backup_${GROUP_ID}`, JSON.stringify(currentGroupData));
+
+            try {
+                // 先拿到雲端完整的全體資料包，更新目前群組後再整包塞回去
+                const resGet = await fetch(API_URL, { headers: { "X-Master-Key": MASTER_KEY, "X-Bin-Meta": "false" } });
+                let fullDb = {};
+                if(resGet.ok) { fullDb = await resGet.json(); }
+                
+                fullDb[GROUP_ID] = currentGroupData;
+
+                await fetch(API_URL, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', "X-Master-Key": MASTER_KEY },
+                    body: JSON.stringify(fullDb)
+                });
+                showSyncStatus('全裝置同步成功', 'success');
+            } catch (e) {
+                showSyncStatus('儲存至本地暫存', 'error');
+            }
+        }
+
+        function applyDataPackage(data) {
+            participants = data.participants || participants;
+            timeSlots = data.timeSlots || timeSlots;
+            hasVotedUsers = data.hasVotedUsers || hasVotedUsers;
+            unavailableDates = data.unavailableDates || unavailableDates;
+            userAvailableTimeSlots = data.userAvailableTimeSlots || userAvailableTimeSlots;
+            selectedMatrixUsers = data.selectedMatrixUsers || selectedMatrixUsers;
+            restaurants = data.restaurants || restaurants;
         }
 
         window.verifyPassword = function() {
@@ -406,6 +483,8 @@
         }
 
         function refreshAllComponents() {
+            renderNameComponents();
+            renderMatrixUserCheckboxes();
             renderCalendar(currentYear, currentMonth);
             renderTimeSlots(); 
             renderRestaurantTable(); 
@@ -419,21 +498,13 @@
             if (participants.includes(name)) { alert('該姓名已存在！'); return; }
             
             participants.push(name);
-            if (!selectedMatrixUsers.includes(name)) {
-                selectedMatrixUsers.push(name); 
-            }
+            if (!selectedMatrixUsers.includes(name)) { selectedMatrixUsers.push(name); }
             input.value = '';
             
             initUserDataStructures();
             saveData(); 
-            
-            renderNameComponents();
-            renderMatrixUserCheckboxes(); 
+            refreshAllComponents();
             updateVoteStatusDashboard();
-            renderUnavailableMatrix(currentYear, currentMonth);
-            renderTimeSlots();
-            renderRestaurantTimeStatsTable();
-            calculateGlobalSummary();
         }
 
         function deleteParticipant(index) {
@@ -444,27 +515,17 @@
                 participants.splice(index, 1);
                 selectedMatrixUsers = selectedMatrixUsers.filter(u => u !== name);
                 hasVotedUsers = hasVotedUsers.filter(u => u !== name);
-                
-                restaurants.forEach(shop => {
-                    if (shop.voters[name]) delete shop.voters[name];
-                });
+                restaurants.forEach(shop => { if (shop.voters[name]) delete shop.voters[name]; });
 
                 saveData();
-
-                renderNameComponents();
-                renderMatrixUserCheckboxes(); 
-                renderCalendar(currentYear, currentMonth);
-                renderTimeSlots();
-                renderRestaurantTimeStatsTable();
+                refreshAllComponents();
                 updateVoteStatusDashboard();
-                renderRestaurantTable();
             }
         }
 
         function renderNameComponents() {
             const restaurantUserSelect = document.getElementById('restaurantUserSelect');
             const currentVoteUser = restaurantUserSelect ? restaurantUserSelect.value : "";
-            
             if(restaurantUserSelect) restaurantUserSelect.innerHTML = '<option value="">— 選擇姓名 —</option>';
 
             participants.forEach(name => {
@@ -567,33 +628,24 @@
         }
 
         function calculateGlobalSummary() {
-            let totalAttending = 0; 
-            let totalAdults = 0; 
-            let totalChildren = 0; 
-            let registeredUsers = new Set();
-            let nonAttendingUsers = new Set();
+            let totalAttending = 0; let totalAdults = 0; let totalChildren = 0; 
+            let registeredUsers = new Set(); let nonAttendingUsers = new Set();
 
             restaurants.forEach(shop => {
                 for (let user in shop.voters) {
-                    let info = shop.voters[user];
-                    registeredUsers.add(user); 
-                    
+                    let info = shop.voters[user]; registeredUsers.add(user); 
                     if (info.status === "參加") {
                         totalAttending += (1 + parseInt(info.adult) + parseInt(info.child));
-                        totalAdults += parseInt(info.adult);
-                        totalChildren += parseInt(info.child);
+                        totalAdults += parseInt(info.adult); totalChildren += parseInt(info.child);
                         nonAttendingUsers.delete(user); 
                     } else if (info.status === "不參加") {
                         let checkAttendingElsewhere = restaurants.some(r => r.voters[user] && r.voters[user].status === "參加");
-                        if (!checkAttendingElsewhere) {
-                            nonAttendingUsers.add(user);
-                        }
+                        if (!checkAttendingElsewhere) { nonAttendingUsers.add(user); }
                     }
                 }
             });
 
             let notRegisteredArr = participants.filter(name => !registeredUsers.has(name));
-
             document.getElementById('summaryTotalCount').innerText = `${totalAttending} 人`;
             document.getElementById('summaryAdultCount').innerText = `${totalAdults} 人`;
             document.getElementById('summaryChildCount').innerText = `${totalChildren} 人`;
@@ -613,20 +665,13 @@
             }
         }
 
-        function startCountdownTimer() {
-            setInterval(updateCountdown, 1000);
-        }
+        function startCountdownTimer() { setInterval(updateCountdown, 1000); }
 
         function updateCountdown() {
             const countdownText = document.getElementById('countdownText');
             const targetDate = new Date("2026-07-14T17:00:00");
-            const now = new Date();
-            const diff = targetDate - now;
-
-            if (diff <= 0) {
-                countdownText.innerText = "投票已截止";
-                return;
-            }
+            const now = new Date(); const diff = targetDate - now;
+            if (diff <= 0) { countdownText.innerText = "投票已截止"; return; }
             const hours = Math.floor(diff / (1000 * 60 * 60));
             const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
             const secs = Math.floor((diff % (1000 * 60)) / 1000);
@@ -636,14 +681,12 @@
         function voteForRestaurant(shopIndex) {
             const user = document.getElementById('restaurantUserSelect').value;
             if(!user) { alert('請先選取您的「姓名」！'); return; }
-
             const status = document.getElementById('attendanceStatus').value;
             const adult = parseInt(document.getElementById('adultCount').value) || 0;
             const child = parseInt(document.getElementById('childCount').value) || 0;
 
             restaurants[shopIndex].voters[user] = { status, adult, child };
-            saveData(); 
-            renderRestaurantTable();
+            saveData(); renderRestaurantTable();
             alert(`已成功為 ${user} 登記「${status}」狀態！`);
         }
 
@@ -652,46 +695,28 @@
             const name = input.value.trim();
             if(!name) return;
             if(restaurants.some(r => r.name === name)) { alert('此餐廳已經在清單中囉！'); return; }
-            
             restaurants.push({ name: name, voters: {} });
-            saveData();
-            input.value = '';
-            renderRestaurantTable();
+            saveData(); input.value = ''; renderRestaurantTable();
         }
 
         function deleteRestaurantShop(index) {
             if(confirm(`確定刪除餐廳「${restaurants[index].name}」嗎？`)) {
-                restaurants.splice(index, 1);
-                saveData();
-                renderRestaurantTable();
+                restaurants.splice(index, 1); saveData(); renderRestaurantTable();
             }
         }
 
         function resetRestaurantForm() {
             const user = document.getElementById('restaurantUserSelect').value;
             if (!user) { alert('請先選取您要刪除重填的「姓名」！'); return; }
-            
             if (confirm(`確定要清除 ${user} 在所有餐廳的投票與登記資料嗎？`)) {
-                restaurants.forEach(shop => {
-                    if (shop.voters[user]) delete shop.voters[user];
-                });
-                
+                restaurants.forEach(shop => { if (shop.voters[user]) delete shop.voters[user]; });
                 document.getElementById('attendanceStatus').value = "參加";
-                document.getElementById('adultCount').value = 0;
-                document.getElementById('childCount').value = 0;
-                
+                document.getElementById('adultCount').value = 0; document.getElementById('childCount').value = 0;
                 if (unavailableDates[user]) unavailableDates[user] = [];
                 if (userAvailableTimeSlots[user]) userAvailableTimeSlots[user] = [];
-                
                 hasVotedUsers = hasVotedUsers.filter(u => u !== user);
 
-                saveData();
-
-                renderRestaurantTable();
-                renderCalendar(currentYear, currentMonth);
-                renderTimeSlots();
-                updateVoteStatusDashboard();
-                renderRestaurantTimeStatsTable();
+                saveData(); refreshAllComponents(); updateVoteStatusDashboard();
                 alert(`已清除 ${user} 的所有登記資料。`);
             }
         }
@@ -705,10 +730,7 @@
 
         function renderCalendar(year, month) {
             document.getElementById('calendarTitle').innerText = `${year}年${month}月`;
-            const grid = document.getElementById('calendarGrid');
-            if(!grid) return;
-            grid.innerHTML = ''; 
-
+            const grid = document.getElementById('calendarGrid'); if(!grid) return; grid.innerHTML = ''; 
             const currentName = document.getElementById('restaurantUserSelect').value;
             const totalDays = new Date(year, month, 0).getDate();
 
@@ -716,23 +738,15 @@
                 const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
                 const dayOfWeekIndex = new Date(year, month - 1, day).getDay();
                 const dayOfWeekStr = weekDaysArr[dayOfWeekIndex];
-
                 const isUnavailable = currentName && unavailableDates[currentName] && unavailableDates[currentName].includes(dateStr);
-                const cardClass = isUnavailable 
-                    ? "bg-rose-500 text-white font-bold border-rose-600 shadow-sm" 
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50 shadow-sm";
+                const cardClass = isUnavailable ? "bg-rose-500 text-white font-bold border-rose-600 shadow-sm" : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50 shadow-sm";
                 const textMutedClass = isUnavailable ? "text-rose-100/90" : (dayOfWeekIndex===0 || dayOfWeekIndex===6 ? "text-rose-500 font-bold" : "text-slate-400 font-normal");
 
                 grid.innerHTML += `
                     <label class="flex items-center justify-between px-3 py-2.5 rounded-lg border cursor-pointer transition-all select-none ${cardClass}">
                         <div class="flex items-center space-x-2 overflow-hidden w-full">
-                            <input type="checkbox" 
-                                   ${isUnavailable ? 'checked' : ''} 
-                                   onchange="toggleDate('${dateStr}')" 
-                                   class="w-3.5 h-3.5 text-rose-600 border-slate-300 rounded focus:ring-transparent cursor-pointer">
-                            <span class="text-xs font-semibold truncate tracking-wide">
-                                ${day}日 <span class="text-[10px] ml-0.5 ${textMutedClass}">(${dayOfWeekStr})</span>
-                            </span>
+                            <input type="checkbox" ${isUnavailable ? 'checked' : ''} onchange="toggleDate('${dateStr}')" class="w-3.5 h-3.5 text-rose-600 border-slate-300 rounded focus:ring-transparent cursor-pointer">
+                            <span class="text-xs font-semibold truncate tracking-wide">${day}日 <span class="text-[10px] ml-0.5 ${textMutedClass}">(${dayOfWeekStr})</span></span>
                         </div>
                     </label>
                 `;
@@ -741,10 +755,7 @@
         }
 
         function renderMatrixUserCheckboxes() {
-            const container = document.getElementById('matrixUserCheckboxContainer');
-            if(!container) return;
-            container.innerHTML = '';
-
+            const container = document.getElementById('matrixUserCheckboxContainer'); if(!container) return; container.innerHTML = '';
             participants.forEach(name => {
                 const isChecked = selectedMatrixUsers.includes(name);
                 container.innerHTML += `
@@ -758,31 +769,21 @@
 
         function handleMatrixUserChange(cb) {
             const name = cb.value;
-            if (cb.checked) {
-                if (!selectedMatrixUsers.includes(name)) selectedMatrixUsers.push(name);
-            } else {
-                selectedMatrixUsers = selectedMatrixUsers.filter(u => u !== name);
-            }
-            saveData();
-            renderUnavailableMatrix(currentYear, currentMonth);
+            if (cb.checked) { if (!selectedMatrixUsers.includes(name)) selectedMatrixUsers.push(name); } 
+            else { selectedMatrixUsers = selectedMatrixUsers.filter(u => u !== name); }
+            saveData(); renderUnavailableMatrix(currentYear, currentMonth);
         }
 
         function selectAllMatrixUsers(status) {
             selectedMatrixUsers = status ? [...participants] : [];
-            saveData();
-            renderMatrixUserCheckboxes();
-            renderUnavailableMatrix(currentYear, currentMonth);
+            saveData(); renderMatrixUserCheckboxes(); renderUnavailableMatrix(currentYear, currentMonth);
         }
 
         function renderUnavailableMatrix(year, month) {
             const totalDays = new Date(year, month, 0).getDate();
-            
-            const dateRow = document.getElementById('matrixDateRow');
-            if(!dateRow) return;
+            const dateRow = document.getElementById('matrixDateRow'); if(!dateRow) return;
             let dateRowHTML = `<th class="p-2 bg-emerald-400 text-slate-950 border-r border-slate-300 font-black text-xs">成員</th>`;
-            for (let d = 1; d <= totalDays; d++) {
-                dateRowHTML += `<th class="p-1 border-r border-slate-200 text-[11px] min-w-[24px]">${d}</th>`;
-            }
+            for (let d = 1; d <= totalDays; d++) { dateRowHTML += `<th class="p-1 border-r border-slate-200 text-[11px] min-w-[24px]">${d}</th>`; }
             dateRow.innerHTML = dateRowHTML;
 
             const weekRow = document.getElementById('matrixWeekRow');
@@ -790,57 +791,35 @@
             for (let d = 1; d <= totalDays; d++) {
                 const dayOfWeekIndex = new Date(year, month - 1, d).getDay();
                 const dayStr = weekDaysArr[dayOfWeekIndex];
-                const isWeekend = (dayOfWeekIndex === 0 || dayOfWeekIndex === 6);
-                const weekendClass = isWeekend ? "text-rose-600 font-bold" : "text-slate-600";
+                const weekendClass = (dayOfWeekIndex === 0 || dayOfWeekIndex === 6) ? "text-rose-600 font-bold" : "text-slate-600";
                 weekRowHTML += `<td class="p-1 border-r border-slate-200 text-[10px] ${weekendClass}">${dayStr}</td>`;
             }
             weekRow.innerHTML = weekRowHTML;
 
-            const tbody = document.getElementById('matrixTableBody');
-            tbody.innerHTML = '';
-
-            if (participants.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="${totalDays + 1}" class="p-4 text-center italic text-slate-400">目前無成員名單。</td></tr>`;
-                return;
-            }
+            const tbody = document.getElementById('matrixTableBody'); tbody.innerHTML = '';
+            if (participants.length === 0) { tbody.innerHTML = `<tr><td colspan="${totalDays + 1}" class="p-4 text-center italic text-slate-400">目前無成員名單。</td></tr>`; return; }
 
             participants.forEach(name => {
                 const isSelected = selectedMatrixUsers.includes(name);
                 const rowOpacityClass = isSelected ? "" : "opacity-30 bg-slate-100/40";
-
                 let rowHTML = `<tr class="hover:bg-slate-50 transition ${rowOpacityClass}"><td class="p-2 border-r border-slate-300 font-bold text-left bg-slate-50/50 pl-3">${name}</td>`;
-                
                 for (let d = 1; d <= totalDays; d++) {
                     const isUnavailable = unavailableDates[name] && unavailableDates[name].includes(`${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
-                    if (isUnavailable) {
-                        rowHTML += `<td class="p-1 border-r border-slate-200 bg-rose-500 text-white font-extrabold text-xs">✕</td>`;
-                    } else {
-                        rowHTML += `<td class="p-1 border-r border-slate-200 text-slate-300 font-normal">—</td>`;
-                    }
+                    rowHTML += isUnavailable ? `<td class="p-1 border-r border-slate-200 bg-rose-500 text-white font-extrabold text-xs">✕</td>` : `<td class="p-1 border-r border-slate-200 text-slate-300 font-normal">—</td>`;
                 }
-                rowHTML += `</tr>`;
-                tbody.innerHTML += rowHTML;
+                tbody.innerHTML += rowHTML + `</tr>`;
             });
-            
             document.getElementById('matrixHeaderTitle').colSpan = totalDays + 1;
         }
 
         function renderTimeSlots() {
-            const container = document.getElementById('timeSlotsContainer');
-            if(!container) return;
-            container.innerHTML = '';
-            
+            const container = document.getElementById('timeSlotsContainer'); if(!container) return; container.innerHTML = '';
             const currentName = document.getElementById('restaurantUserSelect').value;
             const savedSlots = (currentName && userAvailableTimeSlots[currentName]) ? userAvailableTimeSlots[currentName] : [];
 
             timeSlots.forEach((time, index) => {
                 let totalVotersCount = 0;
-                for (let name in userAvailableTimeSlots) {
-                    if (userAvailableTimeSlots[name] && userAvailableTimeSlots[name].includes(time)) {
-                        totalVotersCount++;
-                    }
-                }
-
+                for (let name in userAvailableTimeSlots) { if (userAvailableTimeSlots[name] && userAvailableTimeSlots[name].includes(time)) totalVotersCount++; }
                 const isChecked = savedSlots.includes(time);
 
                 container.innerHTML += `
@@ -848,9 +827,7 @@
                         <label class="flex items-center space-x-2 text-xs text-slate-800 font-bold cursor-pointer">
                             <input type="checkbox" name="timeSlot" value="${time}" ${isChecked ? 'checked' : ''} onchange="syncTimeSlotState(this)" class="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-transparent cursor-pointer">
                             <span>${time}</span>
-                            <span class="text-[11px] font-semibold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-md ml-1">
-                                👤 共 ${totalVotersCount} 人
-                            </span>
+                            <span class="text-[11px] font-semibold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-md ml-1">👤 共 ${totalVotersCount} 人</span>
                         </label>
                         <button onclick="removeTimeSlot(${index})" class="ml-3 text-slate-400 hover:text-rose-500 text-[10px] font-bold p-0.5 opacity-40 hover:opacity-100 transition">✕</button>
                     </div>
@@ -862,68 +839,35 @@
             const currentName = document.getElementById('restaurantUserSelect').value;
             if (!currentName) { alert('請先選擇您的姓名！'); checkbox.checked = !checkbox.checked; return; }
             if (!userAvailableTimeSlots[currentName]) userAvailableTimeSlots[currentName] = [];
-            
-            if (checkbox.checked) {
-                if (!userAvailableTimeSlots[currentName].includes(checkbox.value)) userAvailableTimeSlots[currentName].push(checkbox.value);
-            } else {
-                userAvailableTimeSlots[currentName] = userAvailableTimeSlots[currentName].filter(t => t !== checkbox.value);
-            }
+            if (checkbox.checked) { if (!userAvailableTimeSlots[currentName].includes(checkbox.value)) userAvailableTimeSlots[currentName].push(checkbox.value); } 
+            else { userAvailableTimeSlots[currentName] = userAvailableTimeSlots[currentName].filter(t => t !== checkbox.value); }
             saveData();
         }
 
-        // 新增時段功能
         function addTimeSlot() {
-            const input = document.getElementById('newTimeInput');
-            const time = input.value.trim();
-            if (!time) return;
+            const input = document.getElementById('newTimeInput'); const time = input.value.trim(); if (!time) return;
             if (timeSlots.includes(time)) { alert('此時段已經存在囉！'); return; }
-            
-            timeSlots.push(time);
-            saveData(); 
-            input.value = ''; 
-            
-            renderTimeSlots();
-            renderRestaurantTimeStatsTable();
+            timeSlots.push(time); saveData(); input.value = ''; renderTimeSlots(); renderRestaurantTimeStatsTable();
         }
 
-        // 刪除時段功能
         function removeTimeSlot(index) {
             const time = timeSlots[index];
             if (confirm(`確定要刪除「${time}」這個時段嗎？`)) {
                 timeSlots.splice(index, 1);
-                
-                for (let name in userAvailableTimeSlots) {
-                    if (userAvailableTimeSlots[name]) {
-                        userAvailableTimeSlots[name] = userAvailableTimeSlots[name].filter(t => t !== time);
-                    }
-                }
-                
-                saveData(); 
-                renderTimeSlots();
-                renderRestaurantTimeStatsTable();
+                for (let name in userAvailableTimeSlots) { if (userAvailableTimeSlots[name]) userAvailableTimeSlots[name] = userAvailableTimeSlots[name].filter(t => t !== time); }
+                saveData(); renderTimeSlots(); renderRestaurantTimeStatsTable();
             }
         }
 
         function renderRestaurantTimeStatsTable() {
-            const tableBody = document.getElementById('timeTableBody');
-            if(!tableBody) return;
-            tableBody.innerHTML = '';
-
+            const tableBody = document.getElementById('timeTableBody'); if(!tableBody) return; tableBody.innerHTML = '';
             timeSlots.forEach((time) => {
-                let totalVotersCount = 0;
-                let namesArr = [];
-                for (let name in userAvailableTimeSlots) {
-                    if (userAvailableTimeSlots[name] && userAvailableTimeSlots[name].includes(time)) {
-                        totalVotersCount++;
-                        namesArr.push(name);
-                    }
-                }
-                const namesStr = namesArr.length > 0 ? ` (${namesArr.join('、')})` : '';
-
+                let totalVotersCount = 0; let namesArr = [];
+                for (let name in userAvailableTimeSlots) { if (userAvailableTimeSlots[name] && userAvailableTimeSlots[name].includes(time)) { totalVotersCount++; namesArr.push(name); } }
                 tableBody.innerHTML += `
                     <tr class="text-xs">
                         <td class="p-3 border-r border-slate-200 bg-slate-50/50 text-center font-semibold">${time}</td>
-                        <td class="p-3 font-bold text-slate-800 text-center text-indigo-600">${totalVotersCount} 人<span class="text-[11px] text-slate-500 font-normal ml-1">${namesStr}</span></td>
+                        <td class="p-3 font-bold text-slate-800 text-center text-indigo-600">${totalVotersCount} 人<span class="text-[11px] text-slate-500 font-normal ml-1">${namesArr.length > 0 ? ` (${namesArr.join('、')})` : ''}</span></td>
                     </tr>
                 `;
             });
@@ -933,37 +877,22 @@
             const currentName = document.getElementById('restaurantUserSelect').value;
             if (!currentName) { alert('💡 請先選擇您的「姓名」，才能勾選日期！'); renderCalendar(currentYear, currentMonth); return; }
             if (!unavailableDates[currentName]) unavailableDates[currentName] = [];
-            
             const index = unavailableDates[currentName].indexOf(dateStr);
-            if (index > -1) unavailableDates[currentName].splice(index, 1);
-            else unavailableDates[currentName].push(dateStr);
-            
-            saveData();
-            renderCalendar(currentYear, currentMonth);
+            if (index > -1) unavailableDates[currentName].splice(index, 1); else unavailableDates[currentName].push(dateStr);
+            saveData(); renderCalendar(currentYear, currentMonth);
         }
 
         function updateVoteStatusDashboard() {
             const notVotedUsers = participants.filter(name => !hasVotedUsers.includes(name));
-            const votedHTML = `<strong>已填表 (${hasVotedUsers.length}/${participants.length})：</strong><span class="text-slate-700">${hasVotedUsers.length > 0 ? hasVotedUsers.join('、') : '無'}</span>`;
-            const notVotedHTML = `<strong>尚未填表：</strong><span class="text-rose-700 font-medium">${notVotedUsers.length > 0 ? notVotedUsers.join('、') : '無'}</span>`;
-            
-            const vContainer = document.getElementById('votedListContainer');
-            const nvContainer = document.getElementById('notVotedListContainer');
-            if(vContainer) vContainer.innerHTML = votedHTML;
-            if(nvContainer) nvContainer.innerHTML = notVotedHTML;
+            const vContainer = document.getElementById('votedListContainer'); const nvContainer = document.getElementById('notVotedListContainer');
+            if(vContainer) vContainer.innerHTML = `<strong>已填表 (${hasVotedUsers.length}/${participants.length})：</strong><span class="text-slate-700">${hasVotedUsers.length > 0 ? hasVotedUsers.join('、') : '無'}</span>`;
+            if(nvContainer) nvContainer.innerHTML = `<strong>尚未填表：</strong><span class="text-rose-700 font-medium">${notVotedUsers.length > 0 ? notVotedUsers.join('..') : '無'}</span>`;
         }
 
         function submitVote() {
-            const currentName = document.getElementById('restaurantUserSelect').value;
-            if (!currentName) { alert('請先選擇您的名字！'); return; }
-
+            const currentName = document.getElementById('restaurantUserSelect').value; if (!currentName) { alert('請先選擇您的名字！'); return; }
             if (!hasVotedUsers.includes(currentName)) { hasVotedUsers.push(currentName); }
-            
-            saveData();
-            renderTimeSlots();
-            renderRestaurantTimeStatsTable(); 
-            updateVoteStatusDashboard();
-            renderUnavailableMatrix(currentYear, currentMonth);
+            saveData(); renderTimeSlots(); renderRestaurantTimeStatsTable(); updateVoteStatusDashboard(); renderUnavailableMatrix(currentYear, currentMonth);
             alert(`🎉 日期與多選時段狀態儲存成功！`);
         }
     </script>
